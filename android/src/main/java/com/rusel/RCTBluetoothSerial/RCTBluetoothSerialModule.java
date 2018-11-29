@@ -486,6 +486,11 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
     }
 
     private String readUntil(String delimiter) {
+        if (delimiter.length() == 0) {
+            String data = mBuffer.toString();
+            mBuffer.delete(0, data.length());
+            return data;
+        }
         String data = "";
         int index = mBuffer.indexOf(delimiter, 0);
         if (index > -1) {
