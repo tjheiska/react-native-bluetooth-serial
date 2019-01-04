@@ -60,6 +60,11 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
     private Promise mPairDevicePromise;
     private String delimiter = "";
 
+    /**
+     * Use encoding
+     */
+    private IEncoder encoder = new DefaultEncoder();
+
     public RCTBluetoothSerialModule(ReactApplicationContext reactContext) {
         super(reactContext);
 
@@ -216,6 +221,18 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
     @ReactMethod
     public void withDelimiter(String delimiter, Promise promise) {
         this.delimiter = delimiter;
+        promise.resolve(true);
+    }
+
+    @ReactMethod
+    public void withEncoding(String encoding, Promise promise) {
+        switch(encoding) {
+            case "base64":
+                this.encoder = new Base64Encoder();
+                break;
+            default:
+                break;
+        }
         promise.resolve(true);
     }
 
@@ -482,6 +499,23 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
             WritableMap params = Arguments.createMap();
             params.putString("data", completeData);
             sendEvent(DEVICE_READ, params);
+        }
+    }
+
+    /**
+     * Handle read
+     * @param data Message
+     * @param len length of the message
+     */
+    void onData (byte[] data, int offset, int len) {
+        String encoded = encoder.encodeToString(data, offset, len);
+        mBuffer.append(encoded);
+        String completeData = readUntil(this.delimiter);
+        while (completeData != null && completeData.length() > 0) {
+            WritableMap params = Arguments.createMap();
+            params.putString("data", completeData);
+            sendEvent(DEVICE_READ, params);
+            completeData = readUntil(this.delimiter);
         }
     }
 
