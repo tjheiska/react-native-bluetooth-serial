@@ -6,6 +6,8 @@ declare module "react-native-bluetooth-serial" {
     export function on(type: string, handler: any): void;
     export function withEncoding(encoding: string): void;
     export function write(data: string | Buffer);
+    export function isEnabled(): Promise<boolean>;
+    export function enable(): Promise<void>;
 }
 
 interface IDevice {
