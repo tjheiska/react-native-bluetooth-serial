@@ -1,6 +1,8 @@
 package com.rusel.RCTBluetoothSerial;
 
 import java.lang.reflect.Method;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Set;
 import javax.annotation.Nullable;
 
@@ -48,22 +50,18 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
     private static final int REQUEST_PAIR_DEVICE = 2;
     // Members
     private BluetoothAdapter mBluetoothAdapter;
-    private RCTBluetoothSerialService mBluetoothService;
     private ReactApplicationContext mReactContext;
 
-    private StringBuffer mBuffer = new StringBuffer();
+    // Next connection id
+    private int mNextConnectionId = 0;
 
     // Promises
     private Promise mEnabledPromise;
     private Promise mConnectedPromise;
     private Promise mDeviceDiscoveryPromise;
     private Promise mPairDevicePromise;
-    private String delimiter = "";
-
-    /**
-     * Use encoding
-     */
-    private IEncoder encoder = new DefaultEncoder();
+    private Map<Integer, Promise> mConnectedPromiseMap = new LinkedHashMap<>();
+    private Map<Integer, RCTBluetoothSerialService> mBluetoothServiceMap = new LinkedHashMap<>();
 
     public RCTBluetoothSerialModule(ReactApplicationContext reactContext) {
         super(reactContext);
@@ -74,10 +72,6 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
 
         if (mBluetoothAdapter == null) {
             mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
-        }
-
-        if (mBluetoothService == null) {
-            mBluetoothService = new RCTBluetoothSerialService(this);
         }
 
         if (mBluetoothAdapter != null && mBluetoothAdapter.isEnabled()) {
@@ -97,7 +91,7 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
     }
 
     @Override
-    public void onActivityResult(Activity activity, int requestCode, int resultCode, Intent intent) {
+    public void onActivityResult(int requestCode, int resultCode, Intent intent) {
         if (D) Log.d(TAG, "On activity result request: " + requestCode + ", result: " + resultCode);
         if (requestCode == REQUEST_ENABLE_BLUETOOTH) {
             if (resultCode == Activity.RESULT_OK) {
@@ -123,7 +117,6 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
         }
     }
 
-    @Override
     public void onNewIntent(Intent intent) {
         if (D) Log.d(TAG, "On new intent");
     }
@@ -142,14 +135,20 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
     @Override
     public void onHostDestroy() {
         if (D) Log.d(TAG, "Host destroy");
-        mBluetoothService.stop();
+        for (Integer key: mBluetoothServiceMap.keySet()) {
+            RCTBluetoothSerialService service = mBluetoothServiceMap.remove(key);
+            service.stop();
+        }
     }
 
     @Override
     public void onCatalystInstanceDestroy() {
         if (D) Log.d(TAG, "Catalyst instance destroyed");
         super.onCatalystInstanceDestroy();
-        mBluetoothService.stop();
+        for (Integer key: mBluetoothServiceMap.keySet()) {
+            RCTBluetoothSerialService service = mBluetoothServiceMap.remove(key);
+            service.stop();
+        }
     }
 
     /*******************************/
@@ -219,20 +218,24 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
     }
 
     @ReactMethod
-    public void withDelimiter(String delimiter, Promise promise) {
-        this.delimiter = delimiter;
+    public void withDelimiter(int connectionId, String delimiter, Promise promise) {
+        RCTBluetoothSerialService service = mBluetoothServiceMap.get(connectionId);
+        if (service == null) {
+            promise.resolve(false);
+            return;
+        }
+        service.setDelimiter(delimiter);
         promise.resolve(true);
     }
 
     @ReactMethod
-    public void withEncoding(String encoding, Promise promise) {
-        switch(encoding) {
-            case "base64":
-                this.encoder = new Base64Encoder();
-                break;
-            default:
-                break;
+    public void withEncoding(int connectionId, String encoding, Promise promise) {
+        RCTBluetoothSerialService service = mBluetoothServiceMap.get(connectionId);
+        if (service == null) {
+            promise.resolve(false);
+            return;
         }
+        service.setEncoding(encoding);
         promise.resolve(true);
     }
 
@@ -339,11 +342,14 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
      * Connect to device by id
      */
     public void connect(String id, Promise promise) {
-        mConnectedPromise = promise;
         if (mBluetoothAdapter != null) {
             BluetoothDevice device = mBluetoothAdapter.getRemoteDevice(id);
             if (device != null) {
-                mBluetoothService.connect(device);
+                int connectionId = mNextConnectionId++;
+                RCTBluetoothSerialService bluetoothService = new RCTBluetoothSerialService(this, connectionId);
+                mConnectedPromiseMap.put(connectionId, promise);
+                mBluetoothServiceMap.put(connectionId, bluetoothService);
+                bluetoothService.connect(device);
             } else {
                 promise.reject(new Exception("Could not connect to " + id));
             }
@@ -356,17 +362,27 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
     /**
      * Disconnect from device
      */
-    public void disconnect(Promise promise) {
-        mBluetoothService.stop();
-        promise.resolve(true);
+    public void disconnect(int connectionId, Promise promise) {
+        RCTBluetoothSerialService service = mBluetoothServiceMap.remove(connectionId);
+        if (service != null) {
+            service.stop();
+            promise.resolve(true);
+            return;
+        }
+        promise.resolve(false);
     }
 
     @ReactMethod
     /**
      * Check if device is connected
      */
-    public void isConnected(Promise promise) {
-        promise.resolve(mBluetoothService.isConnected());
+    public void isConnected(int connectionId, Promise promise) {
+        RCTBluetoothSerialService service = mBluetoothServiceMap.get(connectionId);
+        if (service != null) {
+            promise.resolve(service.isConnected());
+            return;
+        }
+        promise.resolve(false);
     }
 
     /*********************/
@@ -376,11 +392,16 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
     /**
      * Write to device over serial port
      */
-    public void writeToDevice(String message, Promise promise) {
+    public void writeToDevice(int connectionId, String message, Promise promise) {
         if (D) Log.d(TAG, "Write " + message);
         byte[] data = Base64.decode(message, Base64.DEFAULT);
-        mBluetoothService.write(data);
-        promise.resolve(true);
+        RCTBluetoothSerialService service = mBluetoothServiceMap.get(connectionId);
+        if (service != null) {
+            service.write(data);
+            promise.resolve(true);
+            return;
+        }
+        promise.resolve(false);
     }
 
     /**********************/
@@ -390,29 +411,54 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
     /**
      * Read from device over serial port
      */
-    public void readFromDevice(Promise promise) {
+    public void readFromDevice(int connectionId, Promise promise) {
         if (D) Log.d(TAG, "Read");
-        int length = mBuffer.length();
-        String data = mBuffer.substring(0, length);
-        mBuffer.delete(0, length);
-        promise.resolve(data);
+        RCTBluetoothSerialService service = mBluetoothServiceMap.get(connectionId);
+        if (service == null) {
+            promise.resolve(null);
+            return;
+        }
+        promise.resolve(service.read());
     }
 
     @ReactMethod
-    public void readUntilDelimiter(String delimiter, Promise promise) {
-        promise.resolve(readUntil(delimiter));
+    public void readUntilDelimiter(int connectionId, String delimiter, Promise promise) {
+        RCTBluetoothSerialService service = mBluetoothServiceMap.get(connectionId);
+        if (service == null) {
+            promise.resolve(-1);
+            return;
+        }
+        promise.resolve(service.readUntil(delimiter));
+    }
+
+    @ReactMethod
+    public void reconnect(int connectionId, Promise promise) {
+        RCTBluetoothSerialService service = mBluetoothAdapter != null ? mBluetoothServiceMap.get(connectionId) : null;
+        String deviceId = service != null ? service.getDeviceId() : null;
+        BluetoothDevice device = service != null ? mBluetoothAdapter.getRemoteDevice(deviceId) : null;
+        if (device == null) {
+            promise.resolve(false);
+            return;
+        }
+        mConnectedPromiseMap.put(connectionId, promise);
+        service.connect(device);
     }
 
 
-    /***********/
+        /***********/
     /** Other **/
 
     @ReactMethod
     /**
      * Clear data in buffer
      */
-    public void clear(Promise promise) {
-        mBuffer.setLength(0);
+    public void clear(int connectionId, Promise promise) {
+        RCTBluetoothSerialService service = mBluetoothServiceMap.get(connectionId);
+        if (service == null) {
+            promise.resolve(false);
+            return;
+        }
+        service.clear();
         promise.resolve(true);
     }
 
@@ -420,8 +466,13 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
     /**
      * Get length of data available to read
      */
-    public void available(Promise promise) {
-        promise.resolve(mBuffer.length());
+    public void available(int connectionId, Promise promise) {
+        RCTBluetoothSerialService service = mBluetoothServiceMap.get(connectionId);
+        if (service == null) {
+            promise.resolve(-1);
+            return;
+        }
+        promise.resolve(service.available());
     }
 
 
@@ -444,9 +495,10 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
      * Handle connection success
      * @param msg Additional message
      */
-    void onConnectionSuccess(String msg) {
+    void onConnectionSuccess(int connectionId, String msg) {
         WritableMap params = Arguments.createMap();
         params.putString("message", msg);
+        params.putInt("connectionId", connectionId);
         sendEvent(CONN_SUCCESS, null);
         if (mConnectedPromise != null) {
             mConnectedPromise.resolve(params);
@@ -458,9 +510,10 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
      * handle connection failure
      * @param msg Additional message
      */
-    void onConnectionFailed(String msg) {
+    void onConnectionFailed(int connectionId, String msg) {
         WritableMap params = Arguments.createMap();
         params.putString("message", msg);
+        params.putInt("connectionId", connectionId);
         sendEvent(CONN_FAILED, null);
         if (mConnectedPromise != null) {
             mConnectedPromise.reject(new Exception(msg));
@@ -472,9 +525,10 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
      * Handle lost connection
      * @param msg Message
      */
-    void onConnectionLost (String msg) {
+    void onConnectionLost (int connectionId, String msg) {
         WritableMap params = Arguments.createMap();
         params.putString("message", msg);
+        params.putInt("connectionId", connectionId);
         sendEvent(CONN_LOST, params);
     }
 
@@ -488,50 +542,31 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
         sendEvent(ERROR, params);
     }
 
-    /**
-     * Handle read
-     * @param data Message
-     */
-    void onData (String data) {
-        mBuffer.append(data);
-        String completeData = readUntil(this.delimiter);
-        if (completeData != null && completeData.length() > 0) {
-            WritableMap params = Arguments.createMap();
-            params.putString("data", completeData);
-            sendEvent(DEVICE_READ, params);
-        }
-    }
+//    /**
+//     * Handle read
+//     * @param data Message
+//     */
+//    void onData (int connectionId, String data) {
+//        mBuffer.append(data);
+//        String completeData = readUntil(this.delimiter);
+//        if (completeData != null && completeData.length() > 0) {
+//            WritableMap params = Arguments.createMap();
+//            params.putString("data", completeData);
+//            params.putInt("connectionId", connectionId);
+//            sendEvent(DEVICE_READ, params);
+//        }
+//    }
 
     /**
      * Handle read
+     * @param connectionId connection id
      * @param data Message
-     * @param len length of the message
      */
-    void onData (byte[] data, int offset, int len) {
-        String encoded = encoder.encodeToString(data, offset, len);
-        mBuffer.append(encoded);
-        String completeData = readUntil(this.delimiter);
-        while (completeData != null && completeData.length() > 0) {
-            WritableMap params = Arguments.createMap();
-            params.putString("data", completeData);
-            sendEvent(DEVICE_READ, params);
-            completeData = readUntil(this.delimiter);
-        }
-    }
-
-    private String readUntil(String delimiter) {
-        if (delimiter.length() == 0) {
-            String data = mBuffer.toString();
-            mBuffer.delete(0, data.length());
-            return data;
-        }
-        String data = "";
-        int index = mBuffer.indexOf(delimiter, 0);
-        if (index > -1) {
-            data = mBuffer.substring(0, index + delimiter.length());
-            mBuffer.delete(0, index + delimiter.length());
-        }
-        return data;
+    void onData (int connectionId, String data) {
+        WritableMap params = Arguments.createMap();
+        params.putInt("connectionId", connectionId);
+        params.putString("data", data);
+        sendEvent(DEVICE_READ, params);
     }
 
     /*********************/

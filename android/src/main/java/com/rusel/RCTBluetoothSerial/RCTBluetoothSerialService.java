@@ -33,6 +33,10 @@ class RCTBluetoothSerialService {
     private ConnectedThread mConnectedThread;
     private RCTBluetoothSerialModule mModule;
     private String mState;
+    private int mConnectionId;
+    private StringBuffer mBuffer = new StringBuffer();
+    private String delimiter = "";
+    private String mDeviceId;
 
     // Constants that indicate the current connection state
     private static final String STATE_NONE = "none";       // we're doing nothing
@@ -40,13 +44,20 @@ class RCTBluetoothSerialService {
     private static final String STATE_CONNECTED = "connected";  // now connected to a remote device
 
     /**
+     * Use encoding
+     */
+    private IEncoder encoder = new DefaultEncoder();
+
+
+    /**
      * Constructor. Prepares a new RCTBluetoothSerialModule session.
      * @param module Module which handles service events
      */
-    RCTBluetoothSerialService(RCTBluetoothSerialModule module) {
+    RCTBluetoothSerialService(RCTBluetoothSerialModule module, int connectionId) {
         mAdapter = BluetoothAdapter.getDefaultAdapter();
         mState = STATE_NONE;
         mModule = module;
+        mConnectionId = connectionId;
     }
 
     /********************************************/
@@ -59,6 +70,7 @@ class RCTBluetoothSerialService {
      */
     synchronized void connect(BluetoothDevice device) {
         if (D) Log.d(TAG, "connect to: " + device);
+        mDeviceId = device.getAddress();
 
         if (mState.equals(STATE_CONNECTING)) {
             cancelConnectThread(); // Cancel any thread attempting to make a connection
@@ -96,6 +108,10 @@ class RCTBluetoothSerialService {
         }
 
         r.write(out); // Perform the write unsynchronized
+    }
+
+    public String getDeviceId() {
+        return mDeviceId;
     }
 
     /**
@@ -145,16 +161,19 @@ class RCTBluetoothSerialService {
         mConnectedThread = new ConnectedThread(socket);
         mConnectedThread.start();
 
-        mModule.onConnectionSuccess("Connected to " + device.getName());
+        mModule.onConnectionSuccess(mConnectionId, "Connected to " + device.getName());
         setState(STATE_CONNECTED);
     }
 
+    public void setDelimiter(String delimiter) {
+        this.delimiter = delimiter;
+    }
 
     /**
      * Indicate that the connection attempt failed and notify the UI Activity.
      */
     private void connectionFailed() {
-        mModule.onConnectionFailed("Unable to connect to device"); // Send a failure message
+        mModule.onConnectionFailed(mConnectionId, "Unable to connect to device"); // Send a failure message
         RCTBluetoothSerialService.this.stop(); // Start the service over to restart listening mode
     }
 
@@ -162,7 +181,7 @@ class RCTBluetoothSerialService {
      * Indicate that the connection was lost and notify the UI Activity.
      */
     private void connectionLost() {
-        mModule.onConnectionLost("Device connection was lost");  // Send a failure message
+        mModule.onConnectionLost(mConnectionId,"Device connection was lost");  // Send a failure message
         RCTBluetoothSerialService.this.stop(); // Start the service over to restart listening mode
     }
 
@@ -184,6 +203,65 @@ class RCTBluetoothSerialService {
             mConnectedThread.cancel();
             mConnectedThread = null;
         }
+    }
+
+    /**
+     *
+     * @return
+     */
+    public String read() {
+        int length = mBuffer.length();
+        String data = mBuffer.substring(0, length);
+        mBuffer.delete(0, length);
+        return data;
+    }
+
+    /**
+     * Handle read
+     * @param data Message
+     * @param len length of the message
+     */
+    private void onData (byte[] data, int offset, int len) {
+        String encoded = encoder.encodeToString(data, offset, len);
+        mBuffer.append(encoded);
+        String completeData = readUntil(this.delimiter);
+        while (completeData != null && completeData.length() > 0) {
+            mModule.onData(mConnectionId, completeData);
+            completeData = readUntil(this.delimiter);
+        }
+    }
+
+    public void setEncoding(String encoding) {
+        switch(encoding) {
+            case "base64":
+                this.encoder = new Base64Encoder();
+                break;
+            default:
+                break;
+        }
+    }
+
+    public String readUntil(String delimiter) {
+        if (delimiter.length() == 0) {
+            String data = mBuffer.toString();
+            mBuffer.delete(0, data.length());
+            return data;
+        }
+        String data = "";
+        int index = mBuffer.indexOf(delimiter, 0);
+        if (index > -1) {
+            data = mBuffer.substring(0, index + delimiter.length());
+            mBuffer.delete(0, index + delimiter.length());
+        }
+        return data;
+    }
+
+    public int available() {
+        return mBuffer.length();
+    }
+
+    public void clear() {
+        mBuffer.setLength(0);
     }
 
     /**
@@ -305,7 +383,7 @@ class RCTBluetoothSerialService {
                     bytes = mmInStream.read(buffer); // Read from the InputStream
                     //String data = new String(buffer, 0, bytes, "ISO-8859-1");
 
-                    mModule.onData(buffer, 0, bytes); // Send the new data String to the UI Activity
+                    onData(buffer, 0, bytes); // Send the new data String to the UI Activity
                 } catch (Exception e) {
                     Log.e(TAG, "disconnected", e);
                     mModule.onError(e);
