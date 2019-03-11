@@ -91,7 +91,7 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
     }
 
     @Override
-    public void onActivityResult(int requestCode, int resultCode, Intent intent) {
+    public void onActivityResult(Activity activity, int requestCode, int resultCode, Intent intent) {
         if (D) Log.d(TAG, "On activity result request: " + requestCode + ", result: " + resultCode);
         if (requestCode == REQUEST_ENABLE_BLUETOOTH) {
             if (resultCode == Activity.RESULT_OK) {
@@ -500,10 +500,10 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
         params.putString("message", msg);
         params.putInt("connectionId", connectionId);
         sendEvent(CONN_SUCCESS, null);
-        if (mConnectedPromise != null) {
-            mConnectedPromise.resolve(params);
+        Promise connectedPromise = mConnectedPromiseMap.remove(connectionId);
+        if (connectedPromise != null) {
+            connectedPromise.resolve(params);
         }
-        mConnectedPromise = null;
     }
 
     /**
@@ -515,10 +515,10 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
         params.putString("message", msg);
         params.putInt("connectionId", connectionId);
         sendEvent(CONN_FAILED, null);
-        if (mConnectedPromise != null) {
-            mConnectedPromise.reject(new Exception(msg));
+        Promise connectedPromise = mConnectedPromiseMap.remove(connectionId);
+        if (connectedPromise != null) {
+            connectedPromise.resolve(params);
         }
-        mConnectedPromise = null;
     }
 
     /**
