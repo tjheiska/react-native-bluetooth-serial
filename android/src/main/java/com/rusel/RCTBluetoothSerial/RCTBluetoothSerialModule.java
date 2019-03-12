@@ -343,8 +343,9 @@ public class RCTBluetoothSerialModule extends ReactContextBaseJavaModule impleme
      */
     public void connect(String id, Promise promise) {
         if (mBluetoothAdapter != null) {
+            BluetoothDevice device = null;
             try {
-                BluetoothDevice device = mBluetoothAdapter.getRemoteDevice(id);
+                device = mBluetoothAdapter.getRemoteDevice(id);
             } catch(Exception e) {
                 promise.reject(e);
             }
